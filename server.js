@@ -1,4 +1,3 @@
-// server.js içinde
 import express from "express";
 import fs from "fs";
 import path from "path";
@@ -8,7 +7,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: "10mb" }));
 
-// POST endpoint (zaten var)
+// POST endpoint
 app.post("/receive", (req, res) => {
   const data = req.body;
   const fileName = data.fileName || "unknown.txt";
@@ -17,14 +16,26 @@ app.post("/receive", (req, res) => {
   res.json({ status: "ok", saved: savePath });
 });
 
-// 🔹 Yeni: Download endpoint
+// Listeleme endpoint
+app.get("/list", (req, res) => {
+  try {
+    const uploadDir = "/tmp";
+    const files = fs.readdirSync(uploadDir);
+    res.json(files);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Dosya indirme endpoint
 app.get("/download/:fileName", (req, res) => {
   try {
-    const filePath = path.join("/tmp", req.params.fileName);
+    const uploadDir = "/tmp";
+    const filePath = path.join(uploadDir, req.params.fileName);
     if (!fs.existsSync(filePath)) {
       return res.status(404).send("Dosya bulunamadı");
     }
-    res.download(filePath); // tarayıcıya indirme olarak gönderir
+    res.download(filePath);
   } catch (err) {
     res.status(500).send(err.message);
   }
