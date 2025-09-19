@@ -1,21 +1,39 @@
-const express = require("express");
+// server.js
+import express from "express";
+import fs from "fs";
+
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-app.use(express.json({ limit: '50mb' })); 
-app.use(express.text({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json({ limit: "10mb" })); // JSON parse + limit
 
-app.use(express.text()); // basit text POST için
+// VB.NET'ten POST gelecek endpoint
+app.post("/receive", (req, res) => {
+  try {
+    const data = req.body; // JSON olarak gelen veri
 
-// POST isteğiyle veri al
-app.post("/data", (req, res) => {
-  console.log("Gelen veri:", req.body);
-  res.send("Veri alındı: " + req.body);
+    // Masaüstündeki txt dosyaları buradan geliyor
+    const fileName = data.fileName || "unknown.txt";
+
+    // Kaydetmek için path (Render’da disk sınırlı, ama tmp veya db kullanılabilir)
+    const savePath = `/tmp/${fileName}.json`;
+
+    fs.writeFileSync(savePath, JSON.stringify(data, null, 2), "utf8");
+
+    console.log(`Dosya kaydedildi: ${savePath}`);
+    res.json({ status: "ok", saved: savePath });
+
+  } catch (err) {
+    console.error("Hata:", err);
+    res.status(500).json({ status: "error", message: err.message });
+  }
 });
 
-// Render'ın kullanacağı port
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server çalışıyor, port: ${PORT}`);
+// Sağlık kontrolü (test için)
+app.get("/", (req, res) => {
+  res.send("Server çalışıyor 🚀");
+});
 
+app.listen(PORT, () => {
+  console.log(`Server ${PORT} portunda çalışıyor`);
 });
