@@ -1,39 +1,33 @@
-// server.js
+// server.js içinde
 import express from "express";
 import fs from "fs";
+import path from "path";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json({ limit: "10mb" })); // JSON parse + limit
+app.use(express.json({ limit: "10mb" }));
 
-// VB.NET'ten POST gelecek endpoint
+// POST endpoint (zaten var)
 app.post("/receive", (req, res) => {
+  const data = req.body;
+  const fileName = data.fileName || "unknown.txt";
+  const savePath = path.join("/tmp", `${fileName}.json`);
+  fs.writeFileSync(savePath, JSON.stringify(data, null, 2), "utf8");
+  res.json({ status: "ok", saved: savePath });
+});
+
+// 🔹 Yeni: Download endpoint
+app.get("/download/:fileName", (req, res) => {
   try {
-    const data = req.body; // JSON olarak gelen veri
-
-    // Masaüstündeki txt dosyaları buradan geliyor
-    const fileName = data.fileName || "unknown.txt";
-
-    // Kaydetmek için path (Render’da disk sınırlı, ama tmp veya db kullanılabilir)
-    const savePath = `/tmp/${fileName}.json`;
-
-    fs.writeFileSync(savePath, JSON.stringify(data, null, 2), "utf8");
-
-    console.log(`Dosya kaydedildi: ${savePath}`);
-    res.json({ status: "ok", saved: savePath });
-
+    const filePath = path.join("/tmp", req.params.fileName);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).send("Dosya bulunamadı");
+    }
+    res.download(filePath); // tarayıcıya indirme olarak gönderir
   } catch (err) {
-    console.error("Hata:", err);
-    res.status(500).json({ status: "error", message: err.message });
+    res.status(500).send(err.message);
   }
 });
 
-// Sağlık kontrolü (test için)
-app.get("/", (req, res) => {
-  res.send("Server çalışıyor 🚀");
-});
-
-app.listen(PORT, () => {
-  console.log(`Server ${PORT} portunda çalışıyor`);
-});
+app.listen(PORT, () => console.log(`Server ${PORT} portunda çalışıyor`));
