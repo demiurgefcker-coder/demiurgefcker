@@ -29,6 +29,23 @@ app.get("/list", (req, res) => {
   }
 });
 
+
+
+
+// Dosya indirme endpoint
+app.get("/download/:fileName", (req, res) => {
+  try {
+    const uploadDir = "/tmp";
+    const filePath = path.join(uploadDir, req.params.fileName);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).send("Dosya bulunamadı");
+    }
+    res.download(filePath);
+  } catch (err) {
+    res.status(500).send(err.message);
+  }
+});
+
 // Resimleri listele
 app.get('/listImages', (req, res) => {
   const dir = path.join(__dirname, 'uploads'); // kayıt klasörün
@@ -52,20 +69,6 @@ app.get('/downloadImage/:fileName', (req, res) => {
   res.download(filePath);
 });
 
-
-// Dosya indirme endpoint
-app.get("/download/:fileName", (req, res) => {
-  try {
-    const uploadDir = "/tmp";
-    const filePath = path.join(uploadDir, req.params.fileName);
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).send("Dosya bulunamadı");
-    }
-    res.download(filePath);
-  } catch (err) {
-    res.status(500).send(err.message);
-  }
-});
-
 app.listen(PORT, () => console.log(`Server ${PORT} portunda çalışıyor`));
+
 
