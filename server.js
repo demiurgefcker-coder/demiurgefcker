@@ -1,81 +1,119 @@
-// server.js
 import express from "express";
-import cors from "cors";
-import bodyParser from "body-parser";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// __dirname tanımı (ESM ortamı için)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Uploads klasörünü oluştur
-const uploadDir = path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir);
-}
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-app.use(cors());
-app.use(bodyParser.json({ limit: "50mb" }));
-app.use(bodyParser.urlencoded({ limit: "50mb", extended: true }));
+app.use(express.json({ limit: "50mb" }));
 
-// 🟩 TEXT VE GÖRSEL DOSYALARI YÜKLEME
-app.post("/upload", async (req, res) => {
+// Tüm dosyalar /tmp içinde tutulur (Render yazılabilir tek dizin)
+const baseDir = "/tmp";
+const uploadDir = path.join(baseDir, "uploads");
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+/* -------------------------------------------
+   📤 1️⃣ Text dosyalarını alma (JSON kaydı)
+-------------------------------------------- */
+app.post("/receive", (req, res) => {
   try {
-    const { fileName, fileData, fileType } = req.body;
-
-    if (!fileName || !fileData) {
-      return res.status(400).json({ error: "Eksik dosya verisi." });
-    }
-
-    // Eğer base64 gönderildiyse, base64'ten çıkar
-    const buffer = Buffer.from(fileData, "base64");
-
-    // Dosyayı kaydet
-    const filePath = path.join(uploadDir, fileName);
-    fs.writeFileSync(filePath, buffer);
-
-    console.log(`✅ Dosya kaydedildi: ${fileName}`);
-    res.json({ message: "Dosya başarıyla kaydedildi." });
-  } catch (error) {
-    console.error("❌ Upload hatası:", error);
-    res.status(500).json({ error: "Dosya yükleme hatası." });
+    const data = req.body;
+    const fileName = data.fileName || "unknown.txt";
+    const savePath = path.join(baseDir, `${fileName}.json`);
+    fs.writeFileSync(savePath, JSON.stringify(data, null, 2), "utf8");
+    res.json({ status: "ok", saved: savePath });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// 🟩 SUNUCUDAKİ TÜM DOSYALARI LİSTELE
+/* -------------------------------------------
+   🧾 2️⃣ Text dosyalarını listeleme
+-------------------------------------------- */
 app.get("/list", (req, res) => {
   try {
-    const files = fs.readdirSync(uploadDir);
+    const files = fs.readdirSync(baseDir)
+      .filter(f => f.endsWith(".json"));
     res.json(files);
-  } catch (error) {
-    console.error("❌ Listeleme hatası:", error);
-    res.status(500).json({ error: "Dosyalar listelenemedi." });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// 🟩 BELİRLİ BİR DOSYAYI İNDİR
+/* -------------------------------------------
+   📥 3️⃣ Text dosyası indirme
+-------------------------------------------- */
 app.get("/download/:fileName", (req, res) => {
   try {
-    const { fileName } = req.params;
-    const filePath = path.join(uploadDir, fileName);
-
+    const filePath = path.join(baseDir, req.params.fileName);
     if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: "Dosya bulunamadı." });
+      return res.status(404).send("Dosya bulunamadı");
     }
-
     res.download(filePath);
-  } catch (error) {
-    console.error("❌ İndirme hatası:", error);
-    res.status(500).json({ error: "Dosya indirilemedi." });
+  } catch (err) {
+    res.status(500).send(err.message);
   }
 });
 
-// 🟩 SUNUCU BAŞLAT
-app.listen(PORT, () => {
-  console.log(`🚀 Sunucu ${PORT} portunda çalışıyor.`);
+/* -------------------------------------------
+   🖼️ 4️⃣ Fotoğraf yükleme (masaüstünden gelen)
+-------------------------------------------- */
+app.post("/upload", (req, res) => {
+  try {
+    const { fileName, fileData, fileType } = req.body;
+    if (!fileName || !fileData) {
+      return res.status(400).json({ error: "Eksik veri gönderildi." });
+    }
+
+    const savePath = path.join(uploadDir, fileName);
+    const buffer = Buffer.from(fileData, "base64");
+    fs.writeFileSync(savePath, buffer);
+
+    res.json({ status: "ok", saved: savePath });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
+
+/* -------------------------------------------
+   🧾 5️⃣ Sunucudaki fotoğrafları listeleme
+-------------------------------------------- */
+app.get("/listImages", (req, res) => {
+  try {
+    const files = fs.readdirSync(uploadDir)
+      .filter(f =>
+        f.endsWith(".jpg") ||
+        f.endsWith(".jpeg") ||
+        f.endsWith(".png") ||
+        f.endsWith(".bmp") ||
+        f.endsWith(".gif")
+      );
+    res.json(files);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* -------------------------------------------
+   📥 6️⃣ Fotoğraf indirme
+-------------------------------------------- */
+app.get("/downloadImage/:fileName", (req, res) => {
+  try {
+    const filePath = path.join(uploadDir, req.params.fileName);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).send("Fotoğraf bulunamadı");
+    }
+    res.download(filePath);
+  } catch (err) {
+    res.status(500).send(err.message);
+  }
+});
+
+/* -------------------------------------------
+   🚀 Sunucuyu başlat
+-------------------------------------------- */
+app.listen(PORT, () => console.log(`✅ Server ${PORT} portunda çalışıyor`));
