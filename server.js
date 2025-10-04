@@ -16,6 +16,8 @@ app.post("/receive", (req, res) => {
   res.json({ status: "ok", saved: savePath });
 });
 
+
+
 // Listeleme endpoint
 app.get("/list", (req, res) => {
   try {
@@ -26,6 +28,30 @@ app.get("/list", (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Resimleri listele
+app.get('/listImages', (req, res) => {
+  const dir = path.join(__dirname, 'uploads'); // kayıt klasörün
+  fs.readdir(dir, (err, files) => {
+    if (err) return res.status(500).json({ error: err.message });
+
+    // sadece resim dosyalarını filtrele
+    const imageFiles = files.filter(f =>
+      f.endsWith('.jpg') || f.endsWith('.jpeg') ||
+      f.endsWith('.png') || f.endsWith('.bmp') ||
+      f.endsWith('.gif')
+    );
+
+    res.json(imageFiles);
+  });
+});
+
+// Resim indir
+app.get('/downloadImage/:fileName', (req, res) => {
+  const filePath = path.join(__dirname, 'uploads', req.params.fileName);
+  res.download(filePath);
+});
+
 
 // Dosya indirme endpoint
 app.get("/download/:fileName", (req, res) => {
@@ -42,3 +68,4 @@ app.get("/download/:fileName", (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`Server ${PORT} portunda çalışıyor`));
+
