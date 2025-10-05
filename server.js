@@ -3,13 +3,65 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: "50mb" }));
+
+// --- online clients store (in-memory)
+const clients = {}; // { machineName: { user, machine, lastSeen: epochMillis, ip } }
+
+// --- heartbeat endpoint (client burada kendini bildirir)
+app.post('/heartbeat', (req, res) => {
+  try {
+    const { machine, user } = req.body || {};
+    const ip = req.ip || req.connection.remoteAddress || null;
+    if (!machine) return res.status(400).json({ error: "missing machine" });
+
+    clients[machine] = {
+      machine,
+      user: user || null,
+      lastSeen: Date.now(),
+      ip
+    };
+
+    // optionally persist small log:
+    // fs.appendFileSync(path.join(__dirname,'heartbeats.log'), `${new Date().toISOString()} ${machine} ${user}\n`);
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('heartbeat err', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// --- online listing endpoint
+// query param `sinceSeconds` optional: consider clients seen within that many seconds (default 60)
+app.get('/online', (req, res) => {
+  try {
+    const sinceSeconds = parseInt(req.query.sinceSeconds || '60', 10);
+    const cutoff = Date.now() - (sinceSeconds * 1000);
+
+    const list = Object.values(clients)
+      .filter(c => c.lastSeen >= cutoff)
+      .map(c => ({
+        machine: c.machine,
+        user: c.user,
+        lastSeen: c.lastSeen,
+        lastSeenIso: new Date(c.lastSeen).toISOString(),
+        ip: c.ip
+      }));
+
+    return res.json(list);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 // Tüm dosyalar /tmp içinde tutulur (Render yazılabilir tek dizin)
 const baseDir = "/tmp";
@@ -117,3 +169,4 @@ app.get("/downloadImage/:fileName", (req, res) => {
    🚀 Sunucuyu başlat
 -------------------------------------------- */
 app.listen(PORT, () => console.log(`✅ Server ${PORT} portunda çalışıyor`));
+
