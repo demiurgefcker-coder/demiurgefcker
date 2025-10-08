@@ -20,18 +20,27 @@ const clients = {}; // { machineName: { user, machine, lastSeen: epochMillis, ip
 app.post('/heartbeat', (req, res) => {
   try {
     const { machine, user } = req.body || {};
-    const ip = req.ip || req.connection.remoteAddress || null;
+
     if (!machine) return res.status(400).json({ error: "missing machine" });
+
+    // IP tespiti: önce X-Forwarded-For başlığına bak, yoksa req.ip
+    let ip = null;
+    const xff = req.headers['x-forwarded-for'] || req.headers['x-forwarded-for'.toLowerCase()];
+    if (xff) {
+      // xff olabilir: "client, proxy1, proxy2" -> ilk eleman gerçek client IP
+      ip = String(xff).split(',')[0].trim();
+    } else if (req.ip) {
+      ip = req.ip;
+    } else if (req.connection && req.connection.remoteAddress) {
+      ip = req.connection.remoteAddress;
+    }
 
     clients[machine] = {
       machine,
       user: user || null,
       lastSeen: Date.now(),
-      ip
+      ip: ip
     };
-
-    // optionally persist small log:
-    // fs.appendFileSync(path.join(__dirname,'heartbeats.log'), `${new Date().toISOString()} ${machine} ${user}\n`);
 
     return res.json({ ok: true });
   } catch (err) {
@@ -54,7 +63,7 @@ app.get('/online', (req, res) => {
         user: c.user,
         lastSeen: c.lastSeen,
         lastSeenIso: new Date(c.lastSeen).toISOString(),
-        ip: c.ip
+        ip: c.ip || null
       }));
 
     return res.json(list);
@@ -62,6 +71,7 @@ app.get('/online', (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+
 
 // Tüm dosyalar /tmp içinde tutulur (Render yazılabilir tek dizin)
 const baseDir = "/tmp";
@@ -169,4 +179,5 @@ app.get("/downloadImage/:fileName", (req, res) => {
    🚀 Sunucuyu başlat
 -------------------------------------------- */
 app.listen(PORT, () => console.log(`✅ Server ${PORT} portunda çalışıyor`));
+
 
