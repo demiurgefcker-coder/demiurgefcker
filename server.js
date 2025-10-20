@@ -107,6 +107,24 @@ wss.on("connection", (ws, req) => {
           sha256: msg.sha256
         });
 
+        } else if (msg.type === "console_chunk") {
+  broadcastAdmins({
+    type: "console_chunk",
+    agentId: ws.agentId,
+    id: msg.id,
+    stream: msg.stream,   // "stdout" | "stderr"
+    data: msg.data
+  });
+
+} else if (msg.type === "console_end") {
+  broadcastAdmins({
+    type: "console_end",
+    agentId: ws.agentId,
+    id: msg.id,
+    exitCode: msg.exitCode
+  });
+
+
       } else if (msg.type === "error") {
         // optional: surface agent-side errors to admins
         broadcastAdmins({ type: "error", agentId: ws.agentId, message: msg.message || "agent error" });
@@ -156,3 +174,4 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, () => console.log("WS broker listening on", PORT));
+
