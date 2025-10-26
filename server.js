@@ -1,4 +1,4 @@
-// server.js — soft idle heartbeat (no ws ping/pong)
+// server.js - verbose logs, no auto-terminate
 
 const http = require("http");
 const express = require("express");
@@ -18,68 +18,53 @@ const wss = new WebSocket.Server({ noServer: true });
 const AGENT_TOKENS = (process.env.AGENT_TOKENS || "agent1token").split(",");
 const ADMIN_TOKENS = (process.env.ADMIN_TOKENS || "admintoken").split(",");
 
-// state
 const agents = new Map(); // agentId -> { ws, info }
-const admins = new Set(); // Set<ws>
+const admins = new Set();
 
-const IDLE_TIMEOUT_MS = 120000; // 2 dakika
+const BOOT_ID = Math.random().toString(36).slice(2, 8);
+console.log("[boot] broker started, BOOT_ID=", BOOT_ID);
 
-// helpers
-function sendJson(ws, obj) {
-  try { ws.send(JSON.stringify(obj)); } catch (e) {}
-}
+function sendJson(ws, obj) { try { ws.send(JSON.stringify(obj)); } catch {} }
 function broadcastAdmins(obj) {
   const s = JSON.stringify(obj);
-  for (const a of admins) {
-    if (a.readyState === WebSocket.OPEN) { try { a.send(s); } catch {} }
-  }
+  for (const a of admins) if (a.readyState === WebSocket.OPEN) { try { a.send(s); } catch {} }
 }
-function parseQS(url) {
-  const q = url.split("?")[1] || "";
-  return new URLSearchParams(q);
-}
-function markSeen(ws) {
-  ws.lastSeen = Date.now();
-}
-
-// idle reaper (no ws.ping/pong)
-setInterval(() => {
-  const now = Date.now();
-
-  // agents
-  for (const [aid, entry] of agents) {
-    const ws = entry.ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN) continue;
-    if (ws.lastSeen && (now - ws.lastSeen) > IDLE_TIMEOUT_MS) {
-      try { ws.terminate(); } catch {}
-    }
-  }
-
-  // admins
-  for (const ws of admins) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) continue;
-    if (ws.lastSeen && (now - ws.lastSeen) > IDLE_TIMEOUT_MS) {
-      try { ws.terminate(); } catch {}
-    }
-  }
-}, 15000); // 15 sn’de bir kontrol
+function parseQS(url) { const q = url.split("?")[1] || ""; return new URLSearchParams(q); }
 
 wss.on("connection", (ws, req) => {
+  const connId = Math.random().toString(36).slice(2, 8);
+  ws.connId = connId;
+
   const url = req.url || "/";
+  const ua = req.headers["user-agent"] || "-";
   const isAgent = url.startsWith("/agent");
   const isAdmin = url.startsWith("/admin");
   const params = parseQS(url);
   const token = params.get("token") || "";
 
-  markSeen(ws);
+  console.log(`[open] ${connId} path=${url} ua="${ua}"`);
+
+  ws.on("error", (err) => {
+    console.error(`[error] ${connId}`, err && err.message ? err.message : err);
+  });
+
+  ws.on("close", (code, reasonBuf) => {
+    const reason = reasonBuf ? reasonBuf.toString() : "";
+    console.log(`[close] ${connId} code=${code} reason="${reason}" kind=${ws.kind || "-"} agentId=${ws.agentId || "-"}`);
+
+    if (ws.kind === "agent" && ws.agentId && agents.has(ws.agentId)) {
+      agents.delete(ws.agentId);
+      broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
+    }
+    if (ws.kind === "admin") admins.delete(ws);
+  });
 
   ws.on("message", (buf) => {
-    markSeen(ws);
     let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
 
-    // Uygulama-level ping/heartbeat
+    // uygulama-level ping/heartbeat
     if (msg.type === "heartbeat" || msg.type === "ping") {
-      // istersen anlık yanıt da ver:
+      // istersen yanıt:
       // sendJson(ws, { type: "pong", ts: Date.now() });
       return;
     }
@@ -88,15 +73,18 @@ wss.on("connection", (ws, req) => {
       if (msg.type === "hello") {
         ws.agentId = msg.agentId || ("agent-" + Math.random().toString(36).slice(2, 8));
         agents.set(ws.agentId, { ws, info: msg });
+        console.log(`[agent:hello] ${connId} => agentId=${ws.agentId}`);
         broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
       } else if (msg.type === "resp" || msg.type === "file" || msg.type === "console_chunk" || msg.type === "console_end") {
+        // adminlere aynen aktar
         broadcastAdmins({ type: msg.type, agentId: ws.agentId, payload: msg, ...msg });
+      } else {
+        console.log(`[agent:msg] ${connId}`, msg.type);
       }
       return;
     }
 
     if (ws.kind === "admin") {
-      // {type:'cmd', id:'uuid', cmd:'...', target:'agentId', ...}
       if (msg.type === "cmd" && msg.target && msg.cmd) {
         const entry = agents.get(msg.target);
         if (entry && entry.ws.readyState === WebSocket.OPEN) {
@@ -104,40 +92,34 @@ wss.on("connection", (ws, req) => {
         } else {
           sendJson(ws, { type: "error", message: "agent not available" });
         }
+      } else {
+        console.log(`[admin:msg] ${connId}`, msg.type);
       }
       return;
-    }
-  });
-
-  ws.on("close", () => {
-    // agent disconnect cleanup
-    if (ws.kind === "agent" && ws.agentId && agents.has(ws.agentId)) {
-      agents.delete(ws.agentId);
-      broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
-    }
-    // admin cleanup
-    if (ws.kind === "admin") {
-      admins.delete(ws);
     }
   });
 
   if (isAgent) {
     if (!AGENT_TOKENS.includes(token)) {
       sendJson(ws, { type: "error", message: "unauthorized agent" });
-      return ws.close();
+      ws.close();
+      return;
     }
     ws.kind = "agent";
     ws.agentId = null;
+    // bağlanır bağlanmaz adminlere mevcut listeyi yollamak gerekmiyor (hello sonrası gönderiyoruz)
     return;
   }
 
   if (isAdmin) {
     if (!ADMIN_TOKENS.includes(token)) {
       sendJson(ws, { type: "error", message: "unauthorized admin" });
-      return ws.close();
+      ws.close();
+      return;
     }
     ws.kind = "admin";
     admins.add(ws);
+    sendJson(ws, { type: "hello", bootId: BOOT_ID });
     sendJson(ws, { type: "agent_list", agents: [...agents.keys()] });
     return;
   }
