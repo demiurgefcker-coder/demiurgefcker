@@ -7,6 +7,10 @@
 //   AGENT_TOKENS="token1,token2"
 //   ADMIN_TOKENS="admintoken1,admintoken2"
 
+const IDLE_TIMEOUT_MS = 120000; // 2 dk
+
+
+
 const http = require("http");
 const express = require("express");
 const morgan = require("morgan");
@@ -47,22 +51,52 @@ function parseQS(url) {
 }
 
 // heartbeat (avoid idle timeouts)
-function installHeartbeat(ws) {
-  ws.isAlive = true;
-  ws.on("pong", () => (ws.isAlive = true));
+function markSeen(ws) {
+  ws.lastSeen = Date.now();
 }
+
 setInterval(() => {
-  const all = [
-    ...admins,
-    ...Array.from(agents.values()).map(x => x.ws)
-  ];
-  for (const ws of all) {
+  const now = Date.now();
+  // agents
+  for (const [aid, entry] of agents) {
+    const ws = entry.ws;
     if (!ws) continue;
-    if (ws.isAlive === false) { try { ws.terminate(); } catch {} continue; }
-    ws.isAlive = false;
-    try { ws.ping(); } catch {}
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    if (ws.lastSeen && now - ws.lastSeen > IDLE_TIMEOUT_MS) {
+      try { ws.terminate(); } catch {}
+    }
   }
-}, 30000);
+  // admins
+  for (const ws of admins) {
+    if (!ws) continue;
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    if (ws.lastSeen && now - ws.lastSeen > IDLE_TIMEOUT_MS) {
+      try { ws.terminate(); } catch {}
+    }
+  }
+}, 15000); // 15 sn’de bir kontrol
+
+wss.on("connection", (ws, req) => {
+  markSeen(ws);
+
+  ws.on("message", buf => {
+    markSeen(ws);
+    let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
+
+    // uygulama-level ping'e cevap ver (opsiyonel)
+    if (msg.type === "heartbeat" || msg.type === "ping") {
+      // istersen geri bir 'pong' da yolla
+      // sendJson(ws, { type: "pong", ts: Date.now() });
+      return;
+    }
+
+    // ... mevcut agent/admin mesaj işleme akışın ...
+  });
+
+  ws.on("close", () => {
+    // mevcut kapatma temizliğin
+  });
+});
 
 wss.on("connection", (ws, req) => {
   installHeartbeat(ws);
@@ -174,4 +208,5 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, () => console.log("WS broker listening on", PORT));
+
 
