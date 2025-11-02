@@ -10,6 +10,14 @@ app.use(morgan("dev"));
 app.get("/", (req, res) => res.status(200).send("OK"));
 app.get("/healthz", (req, res) => res.status(200).json({ ok: true }));
 
+// server.js - app tanımının hemen altına
+app.post('/receive', express.json({limit: '10mb'}), (req, res) => {
+  // Basit 200 cevabı: agent'ın HTTP POST'larını reddetmemek için.
+  // İstersen burada gelen veriyi loglayabilir veya özel işleyebilirsin.
+  console.log('[http receive] body-size=', JSON.stringify(req.body).length);
+  res.status(200).json({ ok: true });
+});
+
 const PORT = process.env.PORT || 8080;
 const server = http.createServer(app);
 
@@ -162,3 +170,4 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, () => console.log("WS broker listening on", PORT));
+
