@@ -132,24 +132,22 @@ wss.on("connection", (ws, req) => {
 
     if (ws.kind === "agent") {
       if (msg.type === "hello") {
-        const incomingId = msg.agentId || ("agent-" + Math.random().toString(36).slice(2, 8));
+  const incomingId = msg.agentId || ("agent-" + Math.random().toString(36).slice(2, 8));
+  const existing = agents.get(incomingId);
 
-        // Aynı agentId ile eski bir bağlantı varsa kapatıp yenisiyle değiştir
-        const existing = agents.get(incomingId);
-        if (existing && existing.ws !== ws) {
-          try { existing.ws.close(4000, "replaced by newer connection"); } catch {}
-        }
+  if (existing && existing.ws && existing.ws.readyState === WebSocket.OPEN && existing.ws !== ws) {
+    // ESKİYİ kapatmak yerine YENİ bağlantıyı reddet
+    sendJson(ws, { type: "error", message: "duplicate agentId; already connected" });
+    try { ws.close(4002, "duplicate agentId"); } catch {}
+    return;
+  }
 
-        ws.agentId = incomingId;
-        agents.set(ws.agentId, { ws, info: msg });
-        console.log(`[agent:hello] ${connId} => agentId=${ws.agentId} openAgents=${countOpen(agents)}`);
-        broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
-      } else if (msg.type === "resp" || msg.type === "file" || msg.type === "console_chunk" || msg.type === "console_end") {
-        // Agent'tan gelen yanıtları adminlere aktar
-        broadcastAdmins({ type: msg.type, agentId: ws.agentId, payload: msg, ...msg });
-      }
-      return;
-    }
+  ws.agentId = incomingId;
+  agents.set(ws.agentId, { ws, info: msg });
+  console.log(`[agent:hello] ${connId} => agentId=${ws.agentId} openAgents=${countOpen(agents)}`);
+  broadcastAdmins({ type: "agent_list", agents: [...agents.keys()] });
+  return;
+}
 
     if (ws.kind === "admin") {
       // 1) Komutları forward et (cmd)
@@ -215,3 +213,4 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, () => console.log("WS broker listening on", PORT));
+
