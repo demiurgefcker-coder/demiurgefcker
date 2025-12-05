@@ -4,6 +4,7 @@ const http = require("http");
 const express = require("express");
 const morgan = require("morgan");
 const WebSocket = require("ws");
+const fs = require("fs");   // ← EKSİK OLAN, 500 HATASININ SEBEBİ
 
 const app = express();
 app.use(morgan("dev"));
@@ -276,4 +277,5 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, () => console.log("WS broker listening on", PORT));
+
 
