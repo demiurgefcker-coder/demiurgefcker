@@ -4,7 +4,6 @@ const http = require("http");
 const express = require("express");
 const morgan = require("morgan");
 const WebSocket = require("ws");
-const fs = require("fs");   // ← EKSİK OLAN, 500 HATASININ SEBEBİ
 
 const app = express();
 app.use(morgan("dev"));
@@ -25,51 +24,6 @@ app.post("/upload", (req, res) => {
   console.log("[http upload] body-size=", sz);
   res.status(200).json({ ok: true });
 });
-
-app.get("/download-chunk", async (req, res) => {
-    const filePath = req.query.path;
-    const start = parseInt(req.query.start);
-    const end = parseInt(req.query.end);
-
-    if (!filePath || isNaN(start) || isNaN(end)) {
-        return res.status(400).json({ error: "Bad request" });
-    }
-
-    try {
-        const stat = fs.statSync(filePath);
-        const fileSize = stat.size;
-
-        if (start >= fileSize) {
-            return res.json({ 
-                done: true, 
-                size: fileSize, 
-                chunk: "" 
-            });
-        }
-
-        const readEnd = Math.min(end, fileSize - 1);
-        const stream = fs.createReadStream(filePath, { start, end: readEnd });
-
-        let chunks = [];
-        stream.on("data", data => chunks.push(data));
-
-        stream.on("end", () => {
-            res.json({
-                done: false,
-                size: fileSize,
-                chunk: Buffer.concat(chunks).toString("base64")
-            });
-        });
-
-        stream.on("error", (err) => {
-            res.status(500).json({ error: err.message });
-        });
-
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
 
 app.get("/online", (req, res) => {
   res.status(200).json({
@@ -175,15 +129,6 @@ wss.on("connection", (ws, req) => {
     // Uygulama seviyesi ping/pong
     if (msg.type === "heartbeat" || msg.type === "ping" || msg.type === "srv_pong") return;
 
-    if (msg.type === "file_chunk") {
-    broadcastAdmins({
-        type: "file_chunk",
-        agentId: ws.agentId,
-        ...msg
-    });
-    return;
-}
-
     // ---------- AGENT DAL ---------- //
     if (ws.kind === "agent") {
       if (msg.type === "hello") {
@@ -286,6 +231,3 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, () => console.log("WS broker listening on", PORT));
-
-
-
