@@ -175,6 +175,15 @@ wss.on("connection", (ws, req) => {
     // Uygulama seviyesi ping/pong
     if (msg.type === "heartbeat" || msg.type === "ping" || msg.type === "srv_pong") return;
 
+    if (msg.type === "file_chunk") {
+    broadcastAdmins({
+        type: "file_chunk",
+        agentId: ws.agentId,
+        ...msg
+    });
+    return;
+}
+
     // ---------- AGENT DAL ---------- //
     if (ws.kind === "agent") {
       if (msg.type === "hello") {
@@ -277,5 +286,6 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, () => console.log("WS broker listening on", PORT));
+
 
 
