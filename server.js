@@ -7,7 +7,7 @@ const WebSocket = require("ws");
 
 const app = express();
 app.use(morgan("dev"));
-app.use(express.json({ limit: "1024mb" })); // JSON body parse
+app.use(express.json({ limit: "25mb" })); // JSON body parse
 
 app.get("/", (req, res) => res.status(200).send("OK"));
 app.get("/healthz", (req, res) => res.status(200).json({ ok: true }));
@@ -231,4 +231,5 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, () => console.log("WS broker listening on", PORT));
+
 
