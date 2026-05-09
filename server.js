@@ -19,6 +19,8 @@ function broadcastToAdmin(data) {
 }
 
 wss.on("connection", (ws) => {
+  console.log("Yeni WebSocket bağlantısı geldi.");
+
   ws.isAuthed = false;
   ws.role = null;
   ws.clientId = null;
@@ -49,6 +51,8 @@ wss.on("connection", (ws) => {
       if (msg.role === "admin") {
         adminSocket = ws;
 
+        console.log("Admin bağlandı.");
+
         return send(ws, {
           type: "auth_ok",
           role: "admin",
@@ -66,6 +70,8 @@ wss.on("connection", (ws) => {
 
         ws.clientId = msg.clientId;
         clients.set(ws.clientId, ws);
+
+        console.log("Client bağlandı:", ws.clientId);
 
         broadcastToAdmin({
           type: "client_connected",
@@ -125,6 +131,21 @@ wss.on("connection", (ws) => {
           text: String(msg.text || "")
         });
       }
+
+      if (msg.type === "open_notepad") {
+        const target = clients.get(msg.targetId);
+
+        if (!target) {
+          return send(ws, {
+            type: "error",
+            message: "Client not found"
+          });
+        }
+
+        return send(target, {
+          type: "open_notepad"
+        });
+      }
     }
 
     // CLIENT MESAJLARI
@@ -147,6 +168,8 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
+    console.log("Bağlantı kapandı:", ws.role, ws.clientId);
+
     if (ws.role === "client" && ws.clientId) {
       clients.delete(ws.clientId);
 
