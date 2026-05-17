@@ -18,6 +18,17 @@ function broadcastToAdmin(data) {
   send(adminSocket, data);
 }
 
+function getClient(targetId) {
+  return clients.get(targetId);
+}
+
+function sendClientNotFound(ws) {
+  return send(ws, {
+    type: "error",
+    message: "Client not found"
+  });
+}
+
 wss.on("connection", (ws) => {
   console.log("Yeni WebSocket bağlantısı geldi.");
 
@@ -37,6 +48,7 @@ wss.on("connection", (ws) => {
       });
     }
 
+    // AUTH
     if (!ws.isAuthed) {
       if (msg.type !== "auth" || msg.token !== AUTH_TOKEN) {
         return send(ws, {
@@ -101,14 +113,8 @@ wss.on("connection", (ws) => {
       }
 
       if (msg.type === "ping_client") {
-        const target = clients.get(msg.targetId);
-
-        if (!target) {
-          return send(ws, {
-            type: "error",
-            message: "Client not found"
-          });
-        }
+        const target = getClient(msg.targetId);
+        if (!target) return sendClientNotFound(ws);
 
         return send(target, {
           type: "ping",
@@ -117,14 +123,8 @@ wss.on("connection", (ws) => {
       }
 
       if (msg.type === "send_message") {
-        const target = clients.get(msg.targetId);
-
-        if (!target) {
-          return send(ws, {
-            type: "error",
-            message: "Client not found"
-          });
-        }
+        const target = getClient(msg.targetId);
+        if (!target) return sendClientNotFound(ws);
 
         return send(target, {
           type: "message",
@@ -133,19 +133,37 @@ wss.on("connection", (ws) => {
       }
 
       if (msg.type === "open_notepad") {
-        const target = clients.get(msg.targetId);
-
-        if (!target) {
-          return send(ws, {
-            type: "error",
-            message: "Client not found"
-          });
-        }
+        const target = getClient(msg.targetId);
+        if (!target) return sendClientNotFound(ws);
 
         return send(target, {
           type: "open_notepad"
         });
       }
+
+      if (msg.type === "list_drives") {
+        const target = getClient(msg.targetId);
+        if (!target) return sendClientNotFound(ws);
+
+        return send(target, {
+          type: "list_drives"
+        });
+      }
+
+      if (msg.type === "list_directory") {
+        const target = getClient(msg.targetId);
+        if (!target) return sendClientNotFound(ws);
+
+        return send(target, {
+          type: "list_directory",
+          path: String(msg.path || "")
+        });
+      }
+
+      return send(ws, {
+        type: "error",
+        message: "Unknown admin message type"
+      });
     }
 
     // CLIENT MESAJLARI
@@ -164,6 +182,37 @@ wss.on("connection", (ws) => {
           status: msg.status || {}
         });
       }
+
+      if (msg.type === "drives_result") {
+        return broadcastToAdmin({
+          type: "drives_result",
+          clientId: ws.clientId,
+          drives: Array.isArray(msg.drives) ? msg.drives : []
+        });
+      }
+
+      if (msg.type === "directory_result") {
+        return broadcastToAdmin({
+          type: "directory_result",
+          clientId: ws.clientId,
+          path: String(msg.path || ""),
+          items: Array.isArray(msg.items) ? msg.items : []
+        });
+      }
+
+      if (msg.type === "directory_error") {
+        return broadcastToAdmin({
+          type: "directory_error",
+          clientId: ws.clientId,
+          path: String(msg.path || ""),
+          message: String(msg.message || "Directory error")
+        });
+      }
+
+      return send(ws, {
+        type: "error",
+        message: "Unknown client message type"
+      });
     }
   });
 
@@ -182,6 +231,10 @@ wss.on("connection", (ws) => {
     if (ws.role === "admin" && adminSocket === ws) {
       adminSocket = null;
     }
+  });
+
+  ws.on("error", (err) => {
+    console.log("WebSocket hata:", err.message);
   });
 });
 
