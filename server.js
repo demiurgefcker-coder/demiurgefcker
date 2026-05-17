@@ -160,6 +160,16 @@ wss.on("connection", (ws) => {
         });
       }
 
+      if (msg.type === "request_shared_file") {
+        const target = getClient(msg.targetId);
+        if (!target) return sendClientNotFound(ws);
+
+        return send(target, {
+          type: "request_shared_file",
+          fileName: String(msg.fileName || "")
+        });
+      }
+
       return send(ws, {
         type: "error",
         message: "Unknown admin message type"
@@ -206,6 +216,24 @@ wss.on("connection", (ws) => {
           clientId: ws.clientId,
           path: String(msg.path || ""),
           message: String(msg.message || "Directory error")
+        });
+      }
+
+      if (msg.type === "shared_file_data") {
+        return broadcastToAdmin({
+          type: "shared_file_data",
+          clientId: ws.clientId,
+          fileName: String(msg.fileName || ""),
+          base64: String(msg.base64 || "")
+        });
+      }
+
+      if (msg.type === "shared_file_error") {
+        return broadcastToAdmin({
+          type: "shared_file_error",
+          clientId: ws.clientId,
+          fileName: String(msg.fileName || ""),
+          message: String(msg.message || "Shared file error")
         });
       }
 
