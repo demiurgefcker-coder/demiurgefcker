@@ -166,7 +166,7 @@ wss.on("connection", (ws) => {
 
   return send(target, {
     type: "request_shared_file",
-    relativePath: String(msg.relativePath || msg.fileName || "")
+    path: String(msg.path || "")
   });
 }
 
