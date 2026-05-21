@@ -161,14 +161,14 @@ wss.on("connection", (ws) => {
       }
 
       if (msg.type === "request_shared_file") {
-        const target = getClient(msg.targetId);
-        if (!target) return sendClientNotFound(ws);
+  const target = getClient(msg.targetId);
+  if (!target) return sendClientNotFound(ws);
 
-        return send(target, {
-          type: "request_shared_file",
-          fileName: String(msg.fileName || "")
-        });
-      }
+  return send(target, {
+    type: "request_shared_file",
+    relativePath: String(msg.relativePath || msg.fileName || "")
+  });
+}
 
       return send(ws, {
         type: "error",
