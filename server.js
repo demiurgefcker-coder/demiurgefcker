@@ -160,6 +160,15 @@ wss.on("connection", (ws) => {
         });
       }
 
+      if (msg.type === "request_screenshot_save") {
+  const target = getClient(msg.targetId);
+  if (!target) return sendClientNotFound(ws);
+
+  return send(target, {
+    type: "request_screenshot_save"
+  });
+}
+
       if (msg.type === "request_shared_file") {
   const target = getClient(msg.targetId);
   if (!target) return sendClientNotFound(ws);
