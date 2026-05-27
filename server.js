@@ -1,9 +1,19 @@
+const http = require("http");
 const WebSocket = require("ws");
 
 const PORT = process.env.PORT || 10000;
 const AUTH_TOKEN = process.env.AUTH_TOKEN || "change-this-token";
 
-const wss = new WebSocket.Server({ port: PORT });
+const server = http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end("OK");
+});
+
+const wss = new WebSocket.Server({ server });
+
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
 
 const clients = new Map();
 let adminSocket = null;
